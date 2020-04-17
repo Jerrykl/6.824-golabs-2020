@@ -7,6 +7,7 @@ import (
 	"../raft"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const Debug = 0
@@ -18,11 +19,33 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+const (
+	RetryNum      int = 10
+	RetryInterval int = 100
+)
+
+const (
+	GET    int = 0
+	PUT    int = 1
+	APPEND int = 2
+)
+
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	OpType   int
+	Key      string
+    Value    string
+    ClientID int64
+    Seq      int64
+}
+
+type reqRes struct {
+	seq   int64
+	hasKey bool
+	value string
 }
 
 type KVServer struct {
@@ -35,15 +58,163 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	db       map[string]string
+	reqTable map[int64]reqRes   // talbe for clients' requests (duplicate table)
+}
+
+func (kv *KVServer) update() {
+	for applyMsg := range kv.applyCh {
+
+		if !applyMsg.CommandValid {
+			continue
+		}
+		op := applyMsg.Command.(Op)
+
+		kv.mu.Lock()
+		// DPrintf("[update] get lock")
+
+		if req, ok := kv.reqTable[op.ClientID]; ok {
+			if req.seq >= op.Seq {
+				kv.mu.Unlock()
+				continue
+			}
+		}
+
+		req := reqRes {
+			seq: op.Seq,
+		}
+
+		switch op.OpType {
+		case GET:
+			req.value, req.hasKey = kv.db[op.Key]
+		case PUT:
+			kv.db[op.Key] = op.Value
+		case APPEND:
+			kv.db[op.Key] += op.Value
+			DPrintf("Server[%v] Append Key %v Value %v", kv.me, op.Key, kv.db[op.Key])
+		}
+		kv.reqTable[op.ClientID] = req
+
+		// DPrintf("[update] release lock")
+		kv.mu.Unlock()
+	}
+}
+
+func (kv *KVServer) checkGetRes(args *GetArgs, reply *GetReply) bool {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	// DPrintf("****Server[%v] Get Client[%v][%v]", kv.me, args.ID, args.Seq)
+
+	if req, ok := kv.reqTable[args.ID]; ok {
+		if req.seq == args.Seq {
+			if req.hasKey {
+				reply.Err = OK
+				reply.Value = req.value
+			} else {
+				reply.Err = ErrNoKey
+				reply.Value = ""
+			}
+			// DPrintf("----Server[%v] Get Client[%v][%v]", kv.me, args.ID, req.seq)
+			return true
+		}
+	}
+	return false
 }
 
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	if kv.checkGetRes(args, reply) {
+		return
+	}
+
+	op := Op {
+		OpType:   GET,
+		Key:      args.Key,
+		Value:    "",
+		ClientID: args.ID,
+		Seq:      args.Seq,
+	}
+
+	_, term, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	// wait for commit
+	for count := 0; count < RetryNum; count++ {
+		if kv.checkGetRes(args, reply) {
+			return
+		}
+
+		if currTerm, _ := kv.rf.GetState(); currTerm != term {
+			reply.Err = ErrWrongLeader
+			return
+		}
+
+		time.Sleep(time.Duration(RetryInterval) * time.Millisecond)
+	}
+	reply.Err = ErrWrongLeader
+}
+
+func (kv *KVServer) checkPutAppendRes(args *PutAppendArgs, reply *PutAppendReply) bool {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	// DPrintf("****Server[%v] %v Client[%v][%v]", kv.me, args.Op, args.ID, args.Seq)
+
+	if req, ok := kv.reqTable[args.ID]; ok {
+		if req.seq == args.Seq {
+			reply.Err = OK
+			// DPrintf("----Server[%v] %v Client[%v][%v]", kv.me, args.Op, args.ID, req.seq)
+			return true
+		}
+	}
+	return false
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	if kv.checkPutAppendRes(args, reply) {
+		return
+	}
+
+	op := Op {
+		Key:      args.Key,
+		Value:    args.Value,
+		ClientID: args.ID,
+		Seq:      args.Seq,
+	}
+
+	switch args.Op {
+	case "Put":
+		op.OpType = PUT
+	case "Append":
+		op.OpType = APPEND
+	default:
+		DPrintf("Wrong op %v", op)
+		return
+	}
+
+	_, term, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	// wait for commit
+	for count := 0; count < RetryNum; count++ {
+		if kv.checkPutAppendRes(args, reply) {
+			return
+		}
+
+		if currTerm, _ := kv.rf.GetState(); currTerm != term {
+			reply.Err = ErrWrongLeader
+			return
+		}
+		time.Sleep(time.Duration(RetryInterval) * time.Millisecond)
+	}
+	reply.Err = ErrWrongLeader
 }
 
 //
@@ -60,6 +231,8 @@ func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
 	// Your code here, if desired.
+	close(kv.applyCh)
+	DPrintf("Server[%v] killed", kv.me)
 }
 
 func (kv *KVServer) killed() bool {
@@ -96,6 +269,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	kv.reqTable = make(map[int64]reqRes)
+	kv.db = make(map[string]string)
+	go kv.update()
 
 	return kv
 }

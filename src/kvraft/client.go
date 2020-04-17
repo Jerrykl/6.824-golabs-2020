@@ -8,6 +8,9 @@ import "math/big"
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+	id int64         // client id
+	seq int64        // sequence number client request
+	lastServer int   // cache the last leader
 }
 
 func nrand() int64 {
@@ -21,6 +24,10 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.id = nrand()
+	ck.lastServer = 0
+	ck.seq = 0
+
 	return ck
 }
 
@@ -39,7 +46,31 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	return ""
+	DPrintf("Client[%v][%v] Get %v", ck.id, ck.seq, key)
+	defer DPrintf("\tFinish Client[%v][%v] Get %v Value", ck.id, ck.seq, key)
+	args := GetArgs {
+		Key: key,
+		ID:  ck.id,
+		Seq: ck.seq,
+	}
+	reply := GetReply {}
+
+	ck.seq += 1
+
+	for {
+		ok := ck.servers[ck.lastServer].Call("KVServer.Get", &args, &reply)
+
+		if ok {
+			switch reply.Err {
+			case OK:
+				return reply.Value
+			case ErrNoKey:
+				return ""
+			case ErrWrongLeader:
+			}
+		}
+		ck.lastServer = (ck.lastServer + 1) % len(ck.servers)
+	}
 }
 
 //
@@ -54,6 +85,31 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	DPrintf("Client[%v][%v] %v Key: %v Value: %v", ck.id, ck.seq, op, key, value)
+	defer DPrintf("\tFinish Client[%v][%v] %v Key: %v Value: %v", ck.id, ck.seq, op, key, value)
+	args := PutAppendArgs {
+		Key:    key,
+		Value:  value,
+		Op:     op,
+		ID:     ck.id,
+		Seq:    ck.seq,
+	}
+	reply := PutAppendReply {}
+
+	ck.seq += 1
+
+	for {
+		ok := ck.servers[ck.lastServer].Call("KVServer.PutAppend", &args, &reply)
+
+		if ok {
+			switch reply.Err {
+			case OK:
+				return
+			case ErrWrongLeader:
+			}
+		}
+		ck.lastServer = (ck.lastServer + 1) % len(ck.servers)
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {

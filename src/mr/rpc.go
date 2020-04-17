@@ -14,12 +14,24 @@ import "strconv"
 // and reply for an RPC.
 //
 
-type ExampleArgs struct {
-	X int
+// N: task number
+// S: file name (if has)
+// Stage: MAP or REDUCE OR DONE
+type RPCArgs struct {
+	N int
+	S string
+	Stage int
 }
 
-type ExampleReply struct {
-	Y int
+// N: task number
+// S: not used
+// Stage: MAP or REDUCE OR DONE
+// NReduce: number of reduce partitions
+type RPCReply struct {
+	N int
+	S string
+	Stage int
+	NReduce int
 }
 
 // Add your RPC definitions here.
