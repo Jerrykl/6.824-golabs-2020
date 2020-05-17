@@ -3,7 +3,11 @@ package kvraft
 import "../labrpc"
 import "crypto/rand"
 import "math/big"
+import "time"
 
+const (
+	ClientWaitInterval = 100
+)
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
@@ -11,6 +15,7 @@ type Clerk struct {
 	id int64         // client id
 	seq int64        // sequence number client request
 	lastServer int   // cache the last leader
+	count int
 }
 
 func nrand() int64 {
@@ -47,7 +52,8 @@ func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
 	DPrintf("Client[%v][%v] Get %v", ck.id, ck.seq, key)
-	defer DPrintf("\tFinish Client[%v][%v] Get %v Value", ck.id, ck.seq, key)
+	t := time.Now()
+	defer DPrintf("\tFinish Client[%v][%v][%v] Get %v Value", ck.id, ck.seq, ck.lastServer, key)
 	args := GetArgs {
 		Key: key,
 		ID:  ck.id,
@@ -58,17 +64,21 @@ func (ck *Clerk) Get(key string) string {
 	ck.seq += 1
 
 	for {
+		ck.count += 1
+		DPrintf("Client[%v] count %v", ck.id, ck.count)
 		ok := ck.servers[ck.lastServer].Call("KVServer.Get", &args, &reply)
 
 		if ok {
 			switch reply.Err {
 			case OK:
+				DPrintf("Client[%v][%v] Get Total time: %v", ck.id, ck.seq, time.Since(t))
 				return reply.Value
 			case ErrNoKey:
 				return ""
 			case ErrWrongLeader:
 			}
 		}
+		time.Sleep(time.Duration(ClientWaitInterval) * time.Millisecond)
 		ck.lastServer = (ck.lastServer + 1) % len(ck.servers)
 	}
 }
@@ -86,7 +96,8 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 	DPrintf("Client[%v][%v] %v Key: %v Value: %v", ck.id, ck.seq, op, key, value)
-	defer DPrintf("\tFinish Client[%v][%v] %v Key: %v Value: %v", ck.id, ck.seq, op, key, value)
+	t := time.Now()
+	defer DPrintf("\tFinish Client[%v][%v][%v] %v Key: %v Value: %v", ck.id, ck.seq, ck.lastServer, op, key, value)
 	args := PutAppendArgs {
 		Key:    key,
 		Value:  value,
@@ -99,15 +110,19 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	ck.seq += 1
 
 	for {
+		ck.count += 1
+		// DPrintf("Client[%v] count %v", ck.id, ck.count)
 		ok := ck.servers[ck.lastServer].Call("KVServer.PutAppend", &args, &reply)
 
 		if ok {
 			switch reply.Err {
 			case OK:
+				DPrintf("Client[%v][%v] Put Total time: %v count %v", ck.id, ck.seq, time.Since(t), ck.count)
 				return
 			case ErrWrongLeader:
 			}
 		}
+		time.Sleep(time.Duration(ClientWaitInterval) * time.Millisecond)
 		ck.lastServer = (ck.lastServer + 1) % len(ck.servers)
 	}
 }
