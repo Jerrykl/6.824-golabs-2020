@@ -56,7 +56,7 @@ func (ck *Clerk) Get(key string) string {
 	defer DPrintf("\tFinish Client[%v][%v][%v] Get %v Value", ck.id, ck.seq, ck.lastServer, key)
 	args := GetArgs {
 		Key: key,
-		ID:  ck.id,
+		ClientID:  ck.id,
 		Seq: ck.seq,
 	}
 	reply := GetReply {}
@@ -102,7 +102,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		Key:    key,
 		Value:  value,
 		Op:     op,
-		ID:     ck.id,
+		ClientID:     ck.id,
 		Seq:    ck.seq,
 	}
 	reply := PutAppendReply {}
